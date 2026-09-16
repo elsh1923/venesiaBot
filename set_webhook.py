@@ -1,14 +1,24 @@
+"""
+Simple script to set the Telegram webhook.
+Uses only the built-in urllib module — no external dependencies needed.
+
+Usage:
+    python set_webhook.py <VERCEL_URL>
+
+Example:
+    python set_webhook.py https://venesia-bot.vercel.app
+"""
 import os
 import sys
-import asyncio
-from telegram.ext import ApplicationBuilder
+import json
+import urllib.request
 
-async def set_webhook():
+def set_webhook():
     token = os.environ.get("BOT_TOKEN")
     if not token:
-        print("Please set the BOT_TOKEN environment variable.")
+        print("ERROR: Please set the BOT_TOKEN environment variable.")
         sys.exit(1)
-        
+
     if len(sys.argv) < 2:
         print("Usage: python set_webhook.py <YOUR_VERCEL_URL>")
         print("Example: python set_webhook.py https://my-bot-project.vercel.app")
@@ -16,11 +26,17 @@ async def set_webhook():
 
     url = sys.argv[1].rstrip("/")
     webhook_url = f"{url}/api/webhook"
-    
-    app = ApplicationBuilder().token(token).build()
-    await app.bot.set_webhook(url=webhook_url)
-    
-    print(f"Webhook successfully set to {webhook_url}")
+
+    api_url = f"https://api.telegram.org/bot{token}/setWebhook?url={webhook_url}"
+
+    with urllib.request.urlopen(api_url) as response:
+        result = json.loads(response.read().decode())
+
+    if result.get("ok"):
+        print(f"SUCCESS: Webhook set to: {webhook_url}")
+    else:
+        print(f"FAILED: {result.get('description', 'Unknown error')}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    asyncio.run(set_webhook())
+    set_webhook()
