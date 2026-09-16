@@ -59,6 +59,24 @@ def get_pending_post():
 def clear_pending_post():
     r.delete("pending_post")
 
+def get_alias(sender_chat_id: int) -> str:
+    """Get or create a persistent anonymous alias like Person A, Person B, etc."""
+    alias = r.get(f"alias:{sender_chat_id}")
+    if alias:
+        return alias
+    # Increment counter and assign next letter
+    count = r.incr("alias_counter")
+    # Convert number to letter(s): 1=A, 2=B, ... 26=Z, 27=AA, 28=AB, ...
+    letters = ""
+    n = count
+    while n > 0:
+        n -= 1
+        letters = chr(65 + (n % 26)) + letters
+        n //= 26
+    alias = f"Person {letters}"
+    r.set(f"alias:{sender_chat_id}", alias)
+    return alias
+
 
 # --- Bot Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -105,7 +123,8 @@ async def handle_owner_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_incoming_story(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_chat_id = update.effective_chat.id
-    logger.info(f"Incoming story from {sender_chat_id}, forwarding to OWNER_ID={OWNER_ID}")
+    alias = get_alias(sender_chat_id)
+    logger.info(f"Incoming story from {alias}, forwarding to OWNER_ID={OWNER_ID}")
 
     copied = await context.bot.copy_message(
         chat_id=OWNER_ID,
@@ -120,7 +139,7 @@ async def handle_incoming_story(update: Update, context: ContextTypes.DEFAULT_TY
     ])
     await context.bot.send_message(
         chat_id=OWNER_ID,
-        text="📩 ታሪክ ደረሰ!\n"
+        text=f"📩 ታሪክ ደረሰ ከ {alias}!\n"
              "— ምላሽ ለመስጠት: ለታሪኩ Telegram Reply ይጠቀሙ\n"
              "— ወደ ቻናሉ ለመለጠፍ: ከታች የሚታየውን ቁልፍ ይጫኑ",
         reply_markup=keyboard,
