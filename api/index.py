@@ -196,10 +196,15 @@ ptb_app.add_handler(CommandHandler("cancel", cancel_pending))
 ptb_app.add_handler(CallbackQueryHandler(button_callback))
 ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, route_message))
 
+_initialized = False
+
 async def process_update(update_json):
-    async with ptb_app:
-        update = Update.de_json(update_json, ptb_app.bot)
-        await ptb_app.process_update(update)
+    global _initialized
+    if not _initialized:
+        await ptb_app.initialize()
+        _initialized = True
+    update = Update.de_json(update_json, ptb_app.bot)
+    await ptb_app.process_update(update)
 
 # --- Flask Server ---
 app = Flask(__name__)
