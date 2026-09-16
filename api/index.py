@@ -197,6 +197,8 @@ ptb_app.add_handler(CallbackQueryHandler(button_callback))
 ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, route_message))
 
 _initialized = False
+_loop = asyncio.new_event_loop()
+asyncio.set_event_loop(_loop)
 
 async def process_update(update_json):
     global _initialized
@@ -220,12 +222,7 @@ def webhook():
         if data is None:
             return jsonify({"error": "Invalid JSON"}), 400
 
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(process_update(data))
-        finally:
-            loop.close()
+        _loop.run_until_complete(process_update(data))
 
         return "OK", 200
     except Exception as e:
