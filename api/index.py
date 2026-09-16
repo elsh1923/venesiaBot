@@ -126,28 +126,35 @@ async def handle_incoming_story(update: Update, context: ContextTypes.DEFAULT_TY
     alias = get_alias(sender_chat_id)
     logger.info(f"Incoming story from {alias}, forwarding to OWNER_ID={OWNER_ID}")
 
-    # First send the alias label to the owner
-    await context.bot.send_message(
-        chat_id=OWNER_ID,
-        text=f"👤 {alias} :",
-    )
-
-    # Then copy the actual message content
-    copied = await context.bot.copy_message(
-        chat_id=OWNER_ID,
-        from_chat_id=sender_chat_id,
-        message_id=update.message.message_id,
-    )
     message_text = update.message.text or None
-    db_save(copied.message_id, sender_chat_id, message_text)
+    original_caption = update.message.caption or ""
+
+    if message_text:
+        # Text message: send as a new message with the alias tag embedded
+        tagged_text = f"👤 {alias}\n\n{message_text}"
+        sent = await context.bot.send_message(
+            chat_id=OWNER_ID,
+            text=tagged_text,
+        )
+        db_save(sent.message_id, sender_chat_id, message_text)
+    else:
+        # Media message (photo, video, etc.): copy with alias in the caption
+        tagged_caption = f"👤 {alias}\n\n{original_caption}".strip()
+        copied = await context.bot.copy_message(
+            chat_id=OWNER_ID,
+            from_chat_id=sender_chat_id,
+            message_id=update.message.message_id,
+            caption=tagged_caption,
+        )
+        db_save(copied.message_id, sender_chat_id, None)
 
     # Send control buttons
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 ወደ ቻናሉ ለጥፍ", callback_data=f"post:{copied.message_id}")],
+        [InlineKeyboardButton("📢 ወደ ቻናሉ ለጥፍ", callback_data=f"post:{sent.message_id if message_text else copied.message_id}")],
     ])
     await context.bot.send_message(
         chat_id=OWNER_ID,
-        text=f"ከ {alias} | Reply ለምላሽ",
+        text="Reply ለምላሽ | 📢 ወደ ቻናሉ ለመለጠፍ",
         reply_markup=keyboard,
     )
     await update.message.reply_text("አስተያየቱ ተልኳል። እናመሰግናለን ✅")
