@@ -195,20 +195,27 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == OWNER_ID:
         pending = get_pending_post()
         if pending is not None:
-            comment = update.message.text or update.message.caption or ""
+            answer = update.message.text or update.message.caption or ""
             _, story_text = db_lookup(pending)
             try:
                 if story_text:
+                    # Text question: combine question + answer into one message
+                    combined = (
+                        f"❓ ጥያቄ:\n{story_text}\n\n"
+                        f"✅ መልስ:\n{answer}"
+                    )
                     await context.bot.send_message(
                         chat_id=CHANNEL_ID,
-                        text=f"{story_text}\n\n{comment}",
+                        text=combined,
                     )
                 else:
+                    # Media question: copy media with answer as caption
+                    caption = f"✅ መልስ:\n{answer}"
                     await context.bot.copy_message(
                         chat_id=CHANNEL_ID,
                         from_chat_id=OWNER_ID,
                         message_id=pending,
-                        caption=comment,
+                        caption=caption,
                     )
                 await update.message.reply_text("ወደ ቻናሉ ተለጥፏል ✅")
                 clear_pending_post()
