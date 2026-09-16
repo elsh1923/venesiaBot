@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import logging
+import traceback
 from flask import Flask, request, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -20,19 +21,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Environment Variables ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
 CHANNEL_ID = os.environ.get("CHANNEL_ID", "@Veni212121")
-KV_URL = os.environ.get("KV_URL", os.environ.get("KV_REST_API_URL"))
+KV_URL = os.environ.get("KV_URL", os.environ.get("REDIS_URL", ""))
 
 # --- Redis Database Connection ---
-if KV_URL and KV_URL.startswith("redis://"):
-    r = redis.Redis.from_url(KV_URL, decode_responses=True)
-elif KV_URL:
-    r = redis.Redis.from_url(KV_URL, decode_responses=True)
-else:
-    # Fallback to localhost if testing locally without KV
-    r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+try:
+    if KV_URL:
+        r = redis.Redis.from_url(KV_URL, decode_responses=True)
+    else:
+        r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+    logger.info("Redis connection configured.")
+except Exception as e:
+    logger.error(f"Redis connection failed: {e}")
+    r = None
 
 # --- Database Helpers ---
 def db_save(owner_message_id: int, sender_chat_id: int, message_text: str = None):
@@ -102,6 +105,7 @@ async def handle_owner_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_incoming_story(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sender_chat_id = update.effective_chat.id
+    logger.info(f"Incoming story from {sender_chat_id}, forwarding to OWNER_ID={OWNER_ID}")
 
     copied = await context.bot.copy_message(
         chat_id=OWNER_ID,
@@ -186,23 +190,16 @@ async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # --- Setup PTB Application ---
-ptb_app = ApplicationBuilder().token(BOT_TOKEN).build()
+ptb_app = ApplicationBuilder().token(BOT_TOKEN).updater(None).build()
 ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(CommandHandler("cancel", cancel_pending))
 ptb_app.add_handler(CallbackQueryHandler(button_callback))
 ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, route_message))
 
-_initialized = False
-async def init_app():
-    global _initialized
-    if not _initialized:
-        await ptb_app.initialize()
-        _initialized = True
-
 async def process_update(update_json):
-    await init_app()
-    update = Update.de_json(update_json, ptb_app.bot)
-    await ptb_app.process_update(update)
+    async with ptb_app:
+        update = Update.de_json(update_json, ptb_app.bot)
+        await ptb_app.process_update(update)
 
 # --- Flask Server ---
 app = Flask(__name__)
@@ -217,12 +214,36 @@ def webhook():
         data = request.get_json()
         if data is None:
             return jsonify({"error": "Invalid JSON"}), 400
-            
-        asyncio.run(process_update(data))
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(process_update(data))
+        finally:
+            loop.close()
+
         return "OK", 200
     except Exception as e:
         logger.exception("Error processing update")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
+
+@app.route("/api/debug", methods=["GET"])
+def debug():
+    """Temporary debug endpoint to verify env vars are set."""
+    redis_ok = False
+    try:
+        if r:
+            r.ping()
+            redis_ok = True
+    except Exception:
+        pass
+    return jsonify({
+        "bot_token_set": bool(BOT_TOKEN),
+        "owner_id": OWNER_ID,
+        "channel_id": CHANNEL_ID,
+        "kv_url_set": bool(KV_URL),
+        "redis_connected": redis_ok,
+    })
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
