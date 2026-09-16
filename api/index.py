@@ -247,15 +247,20 @@ async def process_update(update_json):
     update = Update.de_json(update_json, ptb_app.bot)
     await ptb_app.process_update(update)
 
-# --- Flask Server ---
-app = Flask(__name__)
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Bot is running on Vercel."
+    return "Bot is running.", 200
 
 @app.route("/api/webhook", methods=["POST"])
 def webhook():
+    # Optional webhook secret verification
+    if WEBHOOK_SECRET:
+        secret_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if secret_header != WEBHOOK_SECRET:
+            return jsonify({"error": "Unauthorized"}), 403
+
     try:
         data = request.get_json()
         if data is None:
@@ -266,25 +271,7 @@ def webhook():
         return "OK", 200
     except Exception as e:
         logger.exception("Error processing update")
-        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
-
-@app.route("/api/debug", methods=["GET"])
-def debug():
-    """Temporary debug endpoint to verify env vars are set."""
-    redis_ok = False
-    try:
-        if r:
-            r.ping()
-            redis_ok = True
-    except Exception:
-        pass
-    return jsonify({
-        "bot_token_set": bool(BOT_TOKEN),
-        "owner_id": OWNER_ID,
-        "channel_id": CHANNEL_ID,
-        "kv_url_set": bool(KV_URL),
-        "redis_connected": redis_ok,
-    })
+        return jsonify({"error": "Internal server error"}), 500
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
