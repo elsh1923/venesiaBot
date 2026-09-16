@@ -1,0 +1,228 @@
+import os
+import json
+import asyncio
+import logging
+from flask import Flask, request, jsonify
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
+)
+import redis
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# --- Environment Variables ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+CHANNEL_ID = os.environ.get("CHANNEL_ID", "@Veni212121")
+KV_URL = os.environ.get("KV_URL", os.environ.get("KV_REST_API_URL"))
+
+# --- Redis Database Connection ---
+if KV_URL and KV_URL.startswith("redis://"):
+    r = redis.Redis.from_url(KV_URL, decode_responses=True)
+elif KV_URL:
+    r = redis.Redis.from_url(KV_URL, decode_responses=True)
+else:
+    # Fallback to localhost if testing locally without KV
+    r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+
+# --- Database Helpers ---
+def db_save(owner_message_id: int, sender_chat_id: int, message_text: str = None):
+    data = {"chat_id": sender_chat_id, "text": message_text}
+    r.set(f"mapping:{owner_message_id}", json.dumps(data))
+
+def db_lookup(owner_message_id: int):
+    val = r.get(f"mapping:{owner_message_id}")
+    if val:
+        data = json.loads(val)
+        return data.get("chat_id"), data.get("text")
+    return None, None
+
+def set_pending_post(owner_message_id: int):
+    r.set("pending_post", str(owner_message_id))
+
+def get_pending_post():
+    val = r.get("pending_post")
+    return int(val) if val else None
+
+def clear_pending_post():
+    r.delete("pending_post")
+
+
+# --- Bot Handlers ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == OWNER_ID:
+        await update.message.reply_text(
+            "ቦቱ እየሠራ ነው ✅\n\n"
+            "📩 ታሪኮች ሲደርሱ ከዚህ ይታያሉ።\n"
+            "\u2014 ምላሽ ለመስጠት: ለታሪኩ Telegram Reply ይጠቀሙ\n"
+            "\u2014 ወደ ቻናሉ ለመለጠፍ: የሚታየውን 📢 ቁልፍ ይጫኑ"
+        )
+    else:
+        await update.message.reply_text(
+            "ይህ የኢትዮጲያ ኦርቶዶክስ ተዋሕዶ አማኞች የተለያዩ አስተማሪና ጣፋጭ ታሪኮች "
+            "ወደ ሚተላለፉበት እና እንዲሁም ጥያቄዎቻችሁ ወደ ሚመለሱበት ገጽ በሰላም መጣችሁ ።"
+        )
+
+
+async def handle_owner_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    replied = update.message.reply_to_message
+    if replied is None:
+        await update.message.reply_text(
+            "ምላሽ ለመስጠት፣ ለዚያ ታሪክ Telegram ን 'Reply' ይጠቀሙ።"
+        )
+        return
+
+    sender_chat_id, _ = db_lookup(replied.message_id)
+    if sender_chat_id is None:
+        await update.message.reply_text(
+            "ይህ ታሪክ ከማን እንደመጣ ማግኘት አልተቻለም። (ምናልባት ጊዜው ያለፈ ወይም ቀደም ሲል ምላሽ ተሰጥቶታል።)"
+        )
+        return
+
+    try:
+        await context.bot.copy_message(
+            chat_id=sender_chat_id,
+            from_chat_id=update.effective_chat.id,
+            message_id=update.message.message_id,
+        )
+        await update.message.reply_text("ምላሹ ተልኳል ✅")
+    except Exception as e:
+        logger.exception("Failed to deliver reply to sender")
+        await update.message.reply_text(f"ምላሹን ማድረስ አልተቻለም: {e}")
+
+
+async def handle_incoming_story(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    sender_chat_id = update.effective_chat.id
+
+    copied = await context.bot.copy_message(
+        chat_id=OWNER_ID,
+        from_chat_id=sender_chat_id,
+        message_id=update.message.message_id,
+    )
+    message_text = update.message.text or None
+    db_save(copied.message_id, sender_chat_id, message_text)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 ወደ ቻናሉ ለጥፍ", callback_data=f"post:{copied.message_id}")],
+    ])
+    await context.bot.send_message(
+        chat_id=OWNER_ID,
+        text="📩 ታሪክ ደረሰ!\n"
+             "— ምላሽ ለመስጠት: ለታሪኩ Telegram Reply ይጠቀሙ\n"
+             "— ወደ ቻናሉ ለመለጠፍ: ከታች የሚታየውን ቁልፍ ይጫኑ",
+        reply_markup=keyboard,
+    )
+    await update.message.reply_text("አስተያየቱ ተልኳል። እናመሰግናለን ✅")
+
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data.startswith("post:"):
+        if get_pending_post() is not None:
+            await query.message.reply_text(
+                "⚠️ ቀድም የታሪክ አስተያየት ወለ ነው።\n"
+                "መጠቀም አስተያየት ይፃፉ፣ ወይም ለመሰረዝ /cancel ይፃፉ።"
+            )
+            return
+        owner_msg_id = int(query.data.split(":")[1])
+        set_pending_post(owner_msg_id)
+        await query.message.reply_text(
+            "✏️ አስተያየትዎን ይፃፉ — ከዚያ ወደ ቻናሉ ይለጠፋል።"
+        )
+
+
+async def cancel_pending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return
+    if get_pending_post() is not None:
+        clear_pending_post()
+        await update.message.reply_text("✅ ተሰር዇ል።")
+    else:
+        await update.message.reply_text("ምንም የለለበት ስራዝ የለም።")
+
+
+async def route_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user is None or update.message is None:
+        return
+
+    if update.effective_user.id == OWNER_ID:
+        pending = get_pending_post()
+        if pending is not None:
+            comment = update.message.text or update.message.caption or ""
+            _, story_text = db_lookup(pending)
+            try:
+                if story_text:
+                    await context.bot.send_message(
+                        chat_id=CHANNEL_ID,
+                        text=f"{story_text}\n\n{comment}",
+                    )
+                else:
+                    await context.bot.copy_message(
+                        chat_id=CHANNEL_ID,
+                        from_chat_id=OWNER_ID,
+                        message_id=pending,
+                        caption=comment,
+                    )
+                await update.message.reply_text("ወደ ቻናሉ ተለጥፏል ✅")
+                clear_pending_post()
+            except Exception as e:
+                logger.exception("Failed to post to channel")
+                await update.message.reply_text(f"ወደ ቻናሉ መለጠፍ አልተቻለም: {e}")
+        else:
+            await handle_owner_reply(update, context)
+    else:
+        await handle_incoming_story(update, context)
+
+
+# --- Setup PTB Application ---
+ptb_app = ApplicationBuilder().token(BOT_TOKEN).build()
+ptb_app.add_handler(CommandHandler("start", start))
+ptb_app.add_handler(CommandHandler("cancel", cancel_pending))
+ptb_app.add_handler(CallbackQueryHandler(button_callback))
+ptb_app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, route_message))
+
+_initialized = False
+async def init_app():
+    global _initialized
+    if not _initialized:
+        await ptb_app.initialize()
+        _initialized = True
+
+async def process_update(update_json):
+    await init_app()
+    update = Update.de_json(update_json, ptb_app.bot)
+    await ptb_app.process_update(update)
+
+# --- Flask Server ---
+app = Flask(__name__)
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is running on Vercel."
+
+@app.route("/api/webhook", methods=["POST"])
+def webhook():
+    try:
+        data = request.get_json()
+        if data is None:
+            return jsonify({"error": "Invalid JSON"}), 400
+            
+        asyncio.run(process_update(data))
+        return "OK", 200
+    except Exception as e:
+        logger.exception("Error processing update")
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    app.run(debug=True, port=8000)

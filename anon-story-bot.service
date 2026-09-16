@@ -1,0 +1,15 @@
+[Unit]
+Description=Anonymous Story Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/anon_story_bot
+EnvironmentFile=/home/ubuntu/anon_story_bot/.env
+ExecStart=/home/ubuntu/anon_story_bot/venv/bin/python3 /home/ubuntu/anon_story_bot/bot.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
